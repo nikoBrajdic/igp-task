@@ -4,25 +4,29 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - kafka_network
 
   kafka:
     image: 'confluentinc/cp-kafka:latest'
     depends_on:
       - zookeeper
     ports:
-      - "9092:9092"
-      - "29092:29092"
+      - ${KAFKA_PORT_OUTSIDE}:${KAFKA_PORT_OUTSIDE}
+      - ${KAFKA_PORT_INSIDE}:${KAFKA_PORT_INSIDE}
+    networks:
+      - kafka_network
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${KAFKA_DOMAIN}:${KAFKA_PORT_OUTSIDE},PLAINTEXT_HOST://localhost:${KAFKA_PORT_INSIDE}
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:${KAFKA_PORT_OUTSIDE},PLAINTEXT_HOST://0.0.0.0:${KAFKA_PORT_INSIDE}
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS: "numbers:1:1,final-numbers:1:1"
     healthcheck:
-      test: /bin/kafka-cluster cluster-id --bootstrap-server kafka:9092 || exit 1
+      test: /bin/kafka-cluster cluster-id --bootstrap-server ${KAFKA_DOMAIN}:${KAFKA_PORT_OUTSIDE} || exit 1
       interval: 1s
       timeout: 60s
       retries: 60
@@ -34,10 +38,15 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      - API_KEY=${API_KEY}
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-    ports:
-      - "8000:8000"
+      API_KEY: ${API_KEY}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_DOMAIN}:${KAFKA_PORT_OUTSIDE}
+      KAFKA_GROUP_ID: initials
+    expose:
+      - 8000
+    networks:
+      - kafka_network
+    deploy:
+      replicas: 3
 
   python-service:
     build: midservice/.
@@ -46,11 +55,24 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-    ports:
-      - "8001:8001"
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_DOMAIN}:${KAFKA_PORT_OUTSIDE}
+      KAFKA_GROUP_ID: finals
+    networks:
+      - kafka_network
+    deploy:
+      replicas: 3
 
+  nginx:
+    image: nginx:latest
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - falcon
+    networks:
+      - kafka_network
 
 networks:
-  default:
+  kafka_network:
     name: kafka_network
