@@ -10,5 +10,7 @@ app = falcon.App(
         ResponseTimeMiddleware(),
     ]
 )
-app.add_route("/numbers", ProduceNumbers())
-app.add_route("/final_numbers", ConsumeFinalNumbers())
+service_in = ProduceNumbers()
+service_out = ConsumeFinalNumbers()
+app.add_route("/numbers", service_in)
+app.add_route("/final_numbers", service_out)

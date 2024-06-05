@@ -7,22 +7,24 @@ from datetime import datetime, timezone
 
 import redis as r
 from kafka3 import KafkaProducer, KafkaConsumer
+from kafka3.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
 from kafka3.errors import KafkaTimeoutError
 
 
 class MessageNotSent(Exception):
-    def __init__(self, offset, left, retries):
+    def __init__(self, offset):
         super().__init__(f"Message #{offset} failed to send.")
 
 
 consumer = KafkaConsumer(
     os.getenv("KAFKA_TOPIC_1"),
-    bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS"),
+    bootstrap_servers=[os.getenv("KAFKA_BOOTSTRAP_SERVERS")],
     group_id=os.getenv("KAFKA_GROUP_1"),
     auto_offset_reset="earliest",
     enable_auto_commit=False,
-    heartbeat_interval_ms=3000,
-    session_timeout_ms=10000,
+    session_timeout_ms=int(os.getenv('KAFKA_CONSUMER_SESSION_TIMEOUT', 30000)),
+    heartbeat_interval_ms=int(os.getenv('KAFKA_CONSUMER_HEARTBEAT_INTERVAL', 10000)),
+    partition_assignment_strategy=[RoundRobinPartitionAssignor],
     value_deserializer=lambda message: json.loads(message.decode("utf-8")),
 )
 producer = KafkaProducer(
@@ -65,7 +67,7 @@ def produce_message(data, left, msg, retries):
     msg_sent = msg_future.get(timeout=10)
 
     if not msg_future.is_done:
-        raise MessageNotSent(msg.offset, left, retries)
+        raise MessageNotSent(msg.offset)
 
     print(f"message #{msg.offset} sent.")
 

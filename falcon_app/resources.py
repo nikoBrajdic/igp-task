@@ -9,6 +9,7 @@ from json import JSONDecodeError
 import redis
 from kafka3 import KafkaProducer, KafkaConsumer, OffsetAndMetadata
 from kafka3.errors import KafkaTimeoutError
+from kafka3.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
 
 from custom_exceptions import *
 
@@ -155,12 +156,14 @@ class ConsumeFinalNumbers(Utils):
     def __init__(self):
         self.consumer = KafkaConsumer(
             os.getenv("KAFKA_TOPIC_2"),
-            bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS"),
+            bootstrap_servers=[os.getenv("KAFKA_BOOTSTRAP_SERVERS")],
             group_id=os.getenv("KAFKA_GROUP_2"),
             auto_offset_reset="earliest",
             enable_auto_commit=False,
-            heartbeat_interval_ms=2000,
-            session_timeout_ms=10000,
+            session_timeout_ms=int(os.getenv('KAFKA_CONSUMER_SESSION_TIMEOUT', 30000)),
+            heartbeat_interval_ms=int(os.getenv('KAFKA_CONSUMER_HEARTBEAT_INTERVAL', 10000)),
+            max_poll_interval_ms=300000,
+            partition_assignment_strategy=[RoundRobinPartitionAssignor],
             value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         )
 
