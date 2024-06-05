@@ -14,24 +14,50 @@ from kafka3.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
 from custom_exceptions import *
 
 
+class Config:
+    KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+    KAFKA_TOPIC_1 = os.getenv("KAFKA_TOPIC_1")
+    KAFKA_TOPIC_2 = os.getenv("KAFKA_TOPIC_2")
+    KAFKA_GROUP_1 = os.getenv("KAFKA_GROUP_1")
+    KAFKA_GROUP_2 = os.getenv("KAFKA_GROUP_2")
+    REDIS_HOST = os.getenv("REDIS_HOST")
+    REDIS_PORT = os.getenv("REDIS_PORT")
+    KAFKA_CONSUMER_SESSION_TIMEOUT = int(
+        os.getenv("KAFKA_CONSUMER_SESSION_TIMEOUT", 30000)
+    )
+    KAFKA_CONSUMER_HEARTBEAT_INTERVAL = int(
+        os.getenv("KAFKA_CONSUMER_HEARTBEAT_INTERVAL", 10000)
+    )
+
+
 class Utils:
     @classmethod
     def hash_payload(cls, payload):
         return hashlib.md5(json.dumps(payload).encode("utf-8")).hexdigest()
+
+    @classmethod
+    def get_redis_connection(cls):
+        return redis.Redis(host=Config.REDIS_HOST, port=Config.REDIS_PORT)
+
+    @classmethod
+    def change_message_state(cls, redis_conn, operations):
+        with redis_conn.pipeline() as pipe:
+            pipe.watch(*operations.keys())
+            pipe.multi()
+            for key, action in operations.items():
+                action(pipe, key)
+            pipe.execute()
 
 
 class ProduceNumbers(Utils):
 
     def __init__(self):
         self.producer = KafkaProducer(
-            bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS"),
+            bootstrap_servers=Config.KAFKA_BOOTSTRAP_SERVERS,
             value_serializer=lambda payload: json.dumps(payload).encode("utf-8"),
         )
 
-        self.redis = redis.Redis(
-            host=os.getenv("REDIS_HOST"),
-            port=os.getenv("REDIS_PORT"),
-        )
+        self.redis = self.get_redis_connection()
 
     def on_post(self, req, resp):
         payload = self.clean(req)
@@ -50,11 +76,9 @@ class ProduceNumbers(Utils):
         cache_key_in = "numbers_processing"
         cache_key_done = "numbers_produced"
 
-        left = 1
-
         payload_hash = self.hash_payload(payload)
 
-        while left < retries + 1:
+        for attempt in range(1, retries + 1):
             try:
                 lock_in = self.redis.lock(
                     f"lock:{cache_key_in}", blocking=True, blocking_timeout=40
@@ -80,15 +104,17 @@ class ProduceNumbers(Utils):
                 self.produce_message(payload)
 
                 with lock_done:
-                    with self.redis.pipeline() as pipe:
-                        pipe.watch(cache_key_done, cache_key_in)
-
-                        pipe.multi()
-
-                        pipe.sadd(cache_key_done, payload_hash)
-                        pipe.srem(cache_key_in, payload_hash)
-
-                        pipe.execute()
+                    self.change_message_state(
+                        self.redis,
+                        {
+                            cache_key_done: lambda pipe, key: pipe.sadd(
+                                key, payload_hash
+                            ),
+                            cache_key_in: lambda pipe, key: pipe.srem(
+                                key, payload_hash
+                            ),
+                        },
+                    )
 
                 return True
 
@@ -103,14 +129,13 @@ class ProduceNumbers(Utils):
                 e = traceback.format_exc()
                 print(f"something went wrong while handling message:\n{e}")
 
-            print(f"Retry {left}/{retries}...")
+            print(f"Retry {attempt}/{retries}...")
             time.sleep(1)
-            left += 1
 
         return False
 
     def produce_message(self, payload):
-        msg_future = self.producer.send(os.getenv("KAFKA_TOPIC_1"), payload)
+        msg_future = self.producer.send(Config.KAFKA_TOPIC_1, payload)
         self.producer.flush()
         msg_future.get(timeout=10)
 
@@ -155,21 +180,19 @@ class ProduceNumbers(Utils):
 class ConsumeFinalNumbers(Utils):
     def __init__(self):
         self.consumer = KafkaConsumer(
-            os.getenv("KAFKA_TOPIC_2"),
-            bootstrap_servers=[os.getenv("KAFKA_BOOTSTRAP_SERVERS")],
-            group_id=os.getenv("KAFKA_GROUP_2"),
+            Config.KAFKA_TOPIC_2,
+            bootstrap_servers=[Config.KAFKA_BOOTSTRAP_SERVERS],
+            group_id=Config.KAFKA_GROUP_2,
             auto_offset_reset="earliest",
             enable_auto_commit=False,
-            session_timeout_ms=int(os.getenv('KAFKA_CONSUMER_SESSION_TIMEOUT', 30000)),
-            heartbeat_interval_ms=int(os.getenv('KAFKA_CONSUMER_HEARTBEAT_INTERVAL', 10000)),
+            session_timeout_ms=Config.KAFKA_CONSUMER_SESSION_TIMEOUT,
+            heartbeat_interval_ms=Config.KAFKA_CONSUMER_HEARTBEAT_INTERVAL,
             max_poll_interval_ms=300000,
             partition_assignment_strategy=[RoundRobinPartitionAssignor],
             value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         )
 
-        self.redis = redis.Redis(
-            host=os.getenv("REDIS_HOST"), port=os.getenv("REDIS_PORT")
-        )
+        self.redis = self.get_redis_connection()
 
     def on_get(self, req, resp):
         print(f"Polling {self.consumer.config['group_id']} for max 5 messages...")
@@ -196,8 +219,7 @@ class ConsumeFinalNumbers(Utils):
 
         message_hash = self.hash_payload(msg.value)
 
-        left = 1
-        while left < retries + 1:
+        for attempt in range(1, retries + 1):
             try:
                 lock_in = self.redis.lock(
                     f"lock:{cache_key_in}", blocking=True, blocking_timeout=40
@@ -222,15 +244,17 @@ class ConsumeFinalNumbers(Utils):
                 self.consumer.commit({tp: OffsetAndMetadata(msg.offset + 1, None)})
 
                 with lock_done:
-                    with self.redis.pipeline() as pipe:
-                        pipe.watch(cache_key_done, cache_key_in)
-
-                        pipe.multi()
-
-                        pipe.sadd(cache_key_done, message_hash)
-                        pipe.srem(cache_key_in, message_hash)
-
-                        pipe.execute()
+                    Utils.change_message_state(
+                        self.redis,
+                        {
+                            cache_key_done: lambda pipe, key: pipe.sadd(
+                                key, message_hash
+                            ),
+                            cache_key_in: lambda pipe, key: pipe.srem(
+                                key, message_hash
+                            ),
+                        },
+                    )
 
                 return True
 
@@ -245,8 +269,10 @@ class ConsumeFinalNumbers(Utils):
                 e = traceback.format_exc()
                 print(f"something went wrong while handling message:\n{e}")
 
-            print(f"Retry {left}/{retries}...")
-            left += 1
+            finally:
+                self.redis.srem(cache_key_in, message_hash)
+
+            print(f"Retry {attempt}/{retries}...")
             time.sleep(1)
 
         return False
