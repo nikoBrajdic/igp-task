@@ -65,7 +65,7 @@ services:
     networks:
       - kafka_network
     deploy:
-      replicas: 3
+      replicas: 1
 
   python-service:
     build: midservice/.
