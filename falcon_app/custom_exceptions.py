@@ -34,3 +34,13 @@ class NonNumberProvided(falcon.HTTPBadRequest):
             title="Non-numbers provided.",
             description='"numbers" must contain only numbers',
         )
+
+
+class MessageNotSent(Exception):
+    def __init__(self):
+        super().__init__(f"Message failed to send.")
+
+
+class MessageInProcess(Exception):
+    def __init__(self, offset):
+        super().__init__(f"message #{offset} being processed, retrying.")

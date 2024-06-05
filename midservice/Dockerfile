@@ -4,9 +4,11 @@ LABEL authors="niko"
 
 WORKDIR /code
 
-COPY . /code
+COPY requirements.txt /code
 
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt
+
+COPY . /code
 
 ENTRYPOINT ["python", "numbers_parser.py"]

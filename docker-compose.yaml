@@ -31,6 +31,18 @@ services:
       timeout: 60s
       retries: 60
 
+  redis:
+    image: redis/redis-stack
+    restart: on-failure
+    ports:
+      - ${REDIS_SERVER_PORT}:${REDIS_SERVER_PORT}
+      - ${REDIS_INSIGHT_PORT}:${REDIS_INSIGHT_PORT}
+    environment:
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_SERVER_PORT}
+    networks:
+      - kafka_network
+
   falcon:
     build: falcon_app/.
     restart: on-failure
@@ -38,9 +50,15 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      API_KEY: ${API_KEY}
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_DOMAIN}:${KAFKA_PORT_OUTSIDE}
-      KAFKA_GROUP_ID: initials
+      KAFKA_TOPIC_1: ${KAFKA_TOPIC_1}
+      KAFKA_GROUP_1: ${KAFKA_GROUP_1}
+      KAFKA_TOPIC_2: ${KAFKA_TOPIC_2}
+      KAFKA_GROUP_2: ${KAFKA_GROUP_2}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_SERVER_PORT}
+      API_KEY: ${API_KEY}
+      PYTHONUNBUFFERED: 1
     expose:
       - 8000
     networks:
@@ -56,7 +74,13 @@ services:
         condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_DOMAIN}:${KAFKA_PORT_OUTSIDE}
-      KAFKA_GROUP_ID: finals
+      KAFKA_TOPIC_1: ${KAFKA_TOPIC_1}
+      KAFKA_GROUP_1: ${KAFKA_GROUP_1}
+      KAFKA_TOPIC_2: ${KAFKA_TOPIC_2}
+      KAFKA_GROUP_2: ${KAFKA_GROUP_2}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_SERVER_PORT}
+      PYTHONUNBUFFERED: 1
     networks:
       - kafka_network
     deploy:

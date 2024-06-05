@@ -1,7 +1,7 @@
 import falcon
 
 from middleware import APIKeyMiddleware, ResponseTimeMiddleware
-from resources import TakeNumbers, TakeFinalNumbers
+from resources import ProduceNumbers, ConsumeFinalNumbers
 
 
 app = falcon.App(
@@ -10,5 +10,5 @@ app = falcon.App(
         ResponseTimeMiddleware(),
     ]
 )
-app.add_route("/numbers", TakeNumbers())
-app.add_route("/final_numbers", TakeFinalNumbers())
+app.add_route("/numbers", ProduceNumbers())
+app.add_route("/final_numbers", ConsumeFinalNumbers())

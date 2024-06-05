@@ -4,9 +4,11 @@ LABEL authors="niko"
 
 WORKDIR /code
 
-COPY . /code
+COPY requirements.txt /code
 
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt
 
-ENTRYPOINT ["gunicorn", "-b", "0.0.0.0:8000", "main:app"]
+COPY . /code
+
+ENTRYPOINT ["gunicorn", "-b", "0.0.0.0:8000", "--capture-output", "--log-level", "debug", "main:app"]
