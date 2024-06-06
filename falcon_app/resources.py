@@ -7,7 +7,12 @@ from datetime import datetime, timezone
 from json import JSONDecodeError
 
 import redis
-from kafka3 import KafkaProducer, KafkaConsumer, OffsetAndMetadata
+from kafka3 import (
+    KafkaProducer,
+    KafkaConsumer,
+    OffsetAndMetadata,
+    ConsumerRebalanceListener,
+)
 from kafka3.errors import KafkaTimeoutError
 from kafka3.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
 
@@ -49,6 +54,21 @@ class Utils:
             pipe.execute()
 
 
+class RebalanceListener(ConsumerRebalanceListener):
+    def __init__(self, consumer):
+        self.consumer = consumer
+
+    def on_partitions_revoked(self, revoked_partitions):
+        try:
+            print(f"Partitions revoked: {revoked_partitions}")
+            self.consumer.commit()
+        except Exception as e:
+            print(f"Error during partition revocation: {e}")
+
+    def on_partitions_assigned(self, assigned_partitions):
+        print(f"Partitions assigned: {assigned_partitions}")
+
+
 class ProduceNumbers(Utils):
 
     def __init__(self):
@@ -83,7 +103,9 @@ class ProduceNumbers(Utils):
                 lock_in = self.redis.lock(
                     f"lock:{cache_key_in}", blocking=True, blocking_timeout=40
                 )
-                lock_done = self.redis.lock(f"lock:{cache_key_done}", timeout=40)
+                lock_done = self.redis.lock(
+                    f"lock:{cache_key_done}", blocking=True, blocking_timeout=40
+                )
 
                 if self.redis.sismember(cache_key_done, payload_hash):
                     print(f"message #{payload_hash} already produced, skipping.")
@@ -191,6 +213,9 @@ class ConsumeFinalNumbers(Utils):
             partition_assignment_strategy=[RoundRobinPartitionAssignor],
             value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         )
+        self.consumer.subscribe(
+            [Config.KAFKA_TOPIC_2], listener=RebalanceListener(self.consumer)
+        )
 
         self.redis = self.get_redis_connection()
 
@@ -224,7 +249,9 @@ class ConsumeFinalNumbers(Utils):
                 lock_in = self.redis.lock(
                     f"lock:{cache_key_in}", blocking=True, blocking_timeout=40
                 )
-                lock_done = self.redis.lock(f"lock:{cache_key_done}", timeout=40)
+                lock_done = self.redis.lock(
+                    f"lock:{cache_key_done}", blocking=True, blocking_timeout=40
+                )
 
                 if self.redis.sismember(cache_key_done, message_hash):
                     print(f"Message #{msg.offset} already consumed, skipping.")

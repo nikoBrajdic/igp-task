@@ -6,7 +6,7 @@ import traceback
 from datetime import datetime, timezone
 
 import redis as r
-from kafka3 import KafkaProducer, KafkaConsumer
+from kafka3 import KafkaProducer, KafkaConsumer, ConsumerRebalanceListener
 from kafka3.coordinator.assignors.roundrobin import RoundRobinPartitionAssignor
 from kafka3.errors import KafkaTimeoutError
 
@@ -30,6 +30,21 @@ class Config:
     KAFKA_CONSUMER_HEARTBEAT_INTERVAL = int(
         os.getenv("KAFKA_CONSUMER_HEARTBEAT_INTERVAL", 10000)
     )
+
+
+class RebalanceListener(ConsumerRebalanceListener):
+    def __init__(self, consumer_):
+        self.consumer = consumer_
+
+    def on_partitions_revoked(self, revoked_partitions):
+        try:
+            print(f"Partitions revoked: {revoked_partitions}")
+            self.consumer.commit()
+        except Exception as e:
+            print(f"Error during partition revocation: {e}")
+
+    def on_partitions_assigned(self, assigned_partitions):
+        print(f"Partitions assigned: {assigned_partitions}")
 
 
 class Utils:
@@ -62,6 +77,7 @@ consumer = KafkaConsumer(
     partition_assignment_strategy=[RoundRobinPartitionAssignor],
     value_deserializer=lambda message: json.loads(message.decode("utf-8")),
 )
+consumer.subscribe([Config.KAFKA_TOPIC_1], listener=RebalanceListener(consumer))
 producer = KafkaProducer(
     bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS"),
     value_serializer=lambda payload: json.dumps(payload).encode("utf-8"),
@@ -117,7 +133,12 @@ def try_process_message(msg, retries=30):
             lock_in = redis.lock(
                 f"lock:{cache_key_in}", blocking=True, blocking_timeout=40
             )
-            lock_out = redis.lock(f"lock:{cache_key_out}", timeout=40)
+            lock_out = redis.lock(
+                f"lock:{cache_key_out}", blocking=True, blocking_timeout=40
+            )
+            lock_done = redis.lock(
+                f"lock:{cache_key_done}", blocking=True, blocking_timeout=40
+            )
 
             with lock_in:
                 print("validating incoming message against cache...")
@@ -141,18 +162,23 @@ def try_process_message(msg, retries=30):
                     print(f"message #{msg.offset} already produced, skipping.")
                     return True
 
-                produce_message(data, msg)
+            produce_message(data, msg)
 
-                consumer.commit()
+            consumer.commit()
 
-            Utils.change_message_state(
-                redis,
-                {
-                    cache_key_out: lambda pipe, key: pipe.sadd(key, payload_hash_out),
-                    cache_key_done: lambda pipe, key: pipe.sadd(key, payload_hash_in),
-                    cache_key_in: lambda pipe, key: pipe.srem(key, payload_hash_in),
-                },
-            )
+            with lock_done:
+                Utils.change_message_state(
+                    redis,
+                    {
+                        cache_key_out: lambda pipe, key: pipe.sadd(
+                            key, payload_hash_out
+                        ),
+                        cache_key_done: lambda pipe, key: pipe.sadd(
+                            key, payload_hash_in
+                        ),
+                        cache_key_in: lambda pipe, key: pipe.srem(key, payload_hash_in),
+                    },
+                )
 
             print(f"message #{msg.offset} consumed and set as latest.")
             return True
